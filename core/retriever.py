@@ -4,7 +4,7 @@ from llama_index.core import VectorStoreIndex, Settings
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.embeddings.dashscope import DashScopeEmbedding
 from dotenv import load_dotenv
-
+from langsmith import traceable
 load_dotenv()
 
 # ===== 设置嵌入模型（百炼）=====
@@ -15,7 +15,7 @@ Settings.embed_model = DashScopeEmbedding(
 )
 
 _retriever = None
-
+@traceable(run_type="retriever", name="get_retriever")
 def get_retriever(top_k: int = 5):
     global _retriever
     if _retriever is None:

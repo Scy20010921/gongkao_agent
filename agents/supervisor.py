@@ -7,6 +7,7 @@ from agents.qa_agent import qa_agent
 from agents.exam_agent import exam_agent
 from agents.plan_agent import plan_agent
 from agents.grading_agent import grading_agent
+from agents.job_agent import job_agent
 load_dotenv()
 
 # 初始化 LLM（用于意图识别）
@@ -54,7 +55,7 @@ def route_to_agent(state: AgentState) -> str:
     intent = state.get("intent", "qa")
     routing_map = {
         "qa": "qa_agent",
-        "job": "qa_agent",  # 暂时先用 qa_agent 占位
+        "job": "job_agent",  # 暂时先用 qa_agent 占位
         "plan": "plan_agent",  # 后续替换为真实的子 Agent
         "exam": "exam_agent",
         "grading": "grading_agent",
@@ -73,6 +74,7 @@ supervisor_graph.add_node("qa_agent", qa_agent)  # 目前只有一个，后续�
 supervisor_graph.add_node("exam_agent", exam_agent)
 supervisor_graph.add_node("plan_agent", plan_agent)
 supervisor_graph.add_node("grading_agent", grading_agent)
+supervisor_graph.add_node("job_agent", job_agent)
 
 # 设置入口
 supervisor_graph.set_entry_point("classify")
@@ -86,6 +88,7 @@ supervisor_graph.add_conditional_edges(
         "exam_agent": "exam_agent",
         "plan_agent": "plan_agent",
         "grading_agent": "grading_agent",
+        "job_agent": "job_agent",
         # 后续添加更多 Agent 时在这里扩展
     }
 )
@@ -95,5 +98,6 @@ supervisor_graph.add_edge("qa_agent", END)
 supervisor_graph.add_edge("exam_agent", END)
 supervisor_graph.add_edge("plan_agent", END)
 supervisor_graph.add_edge("grading_agent", END)
+supervisor_graph.add_edge("job_agent", END)
 # 编译
 supervisor_workflow = supervisor_graph.compile()

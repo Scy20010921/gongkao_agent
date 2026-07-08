@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from core.retriever import get_retriever
 from agents.state import AgentState
-
+from langsmith import traceable
 load_dotenv()
 
 def get_llm():
@@ -13,7 +13,7 @@ def get_llm():
         api_key=os.getenv("ANTHROPIC_API_KEY"),
         timeout=30
     )
-
+@traceable(run_type="chain", name="qa_agent")
 def qa_agent(state: AgentState) -> AgentState:
     """答疑 Agent：检索 + Claude 生成"""
     query = state["user_query"]

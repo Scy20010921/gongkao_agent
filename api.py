@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from agents.supervisor import supervisor_workflow
 from agents.state import AgentState
-
+from langsmith import traceable
 app = FastAPI()
 
 
@@ -11,6 +11,7 @@ class QueryRequest(BaseModel):
 
 
 @app.post("/chat")  # 改为 /chat，更符合 Agent 语义
+@traceable(run_type="chain", name="chat_endpoint")
 def chat(request: QueryRequest):
     # 初始化状态
     state = AgentState(
