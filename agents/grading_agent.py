@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from core.retriever import get_retriever
 from agents.state import AgentState
-
+from core.redis_manager import get_session
 load_dotenv()
 
 
@@ -30,6 +30,14 @@ def extract_essay(query: str) -> str:
 
 def grading_agent(state: AgentState) -> AgentState:
     query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+
+    essay = extract_essay(query)
     try:
         print(f"📝 [Grading Agent] 收到批改请求")
 
@@ -49,35 +57,37 @@ def grading_agent(state: AgentState) -> AgentState:
 
         # 3. 调用 Claude 进行批改
         prompt = f"""你是一名资深的申论批改专家。请对以下作文进行批改，并给出详细的评分报告。
-
-**评分标准参考**（基于公考申论评分规则）：
-{context}
-
-**用户作文**：
-{essay}
-
-请按以下格式输出批改报告：
-### 总体评分
-（给出一个总分，如 65/100，并简要说明）
-
-### 评分维度拆解
-- 内容充实度（满分25）：得分 X，理由...
-- 逻辑结构（满分25）：得分 X，理由...
-- 语言表达（满分25）：得分 X，理由...
-- 思想深度/观点（满分25）：得分 X，理由...
-
-### 主要优点
-（列出2-3个亮点）
-
-### 主要问题
-（列出2-3个不足，并具体指出问题所在）
-
-### 改进建议
-（给出具体的修改方向，可举例）
-
-### 参考范文片段
-（从资料库中摘录一段与题目相关的优秀范文片段，供用户参考）
-"""
+        【对话历史】
+        {history_text if history_text else "无"}
+        
+        **评分标准参考**（基于公考申论评分规则）：
+        {context}
+        
+        **用户作文**：
+        {essay}
+        
+        请按以下格式输出批改报告：
+        ### 总体评分
+        （给出一个总分，如 65/100，并简要说明）
+        
+        ### 评分维度拆解
+        - 内容充实度（满分25）：得分 X，理由...
+        - 逻辑结构（满分25）：得分 X，理由...
+        - 语言表达（满分25）：得分 X，理由...
+        - 思想深度/观点（满分25）：得分 X，理由...
+        
+        ### 主要优点
+        （列出2-3个亮点）
+        
+        ### 主要问题
+        （列出2-3个不足，并具体指出问题所在）
+        
+        ### 改进建议
+        （给出具体的修改方向，可举例）
+        
+        ### 参考范文片段
+        （从资料库中摘录一段与题目相关的优秀范文片段，供用户参考）
+        """
         llm = get_llm()
         print("🤖 正在批改作文...")
         t0 = time.time()
@@ -100,3 +110,49 @@ def grading_agent(state: AgentState) -> AgentState:
         state["final_answer"] = f"批改失败: {str(e)}"
         state["intermediate"]["grading"] = {}
         return state
+
+async def grading_agent_stream(state: AgentState):
+    query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+    # 提取作文（简单实现，取 : 后的内容）
+    essay = query.split("：")[-1] if "：" in query else query
+    if len(essay) < 50:
+        yield "作文内容太短，请提供完整的申论作文（至少50字）。"
+        return
+
+    retriever = get_retriever(top_k=4)
+    nodes = retriever.retrieve("申论 评分标准 写作要求")
+    context = "\n".join([n.text for n in nodes]) if nodes else ""
+
+    prompt = f"""你是一名公考申论阅卷专家。请对以下申论作文进行批改。
+    【对话历史】
+    {history_text if history_text else "无"}
+    评分标准参考：{context}
+    作文：{essay}
+    输出格式：
+    ### 综合评分
+    ### 各维度得分（立意、结构、论证、语言）
+    ### 优点
+    ### 不足与改进建议"""
+
+    llm = ChatAnthropic(
+        model="claude-haiku-4-5-20251001",
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        streaming=True,
+        max_tokens=4096
+    )
+    async for chunk in llm.astream(prompt):
+        content = chunk.content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    yield block.get('text', '')
+                elif hasattr(block, 'type') and block.type == 'text':
+                    yield block.text
+        else:
+            yield str(content)

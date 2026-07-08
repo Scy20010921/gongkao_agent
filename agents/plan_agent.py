@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from core.retriever import get_retriever
 from agents.state import AgentState
-
+from core.redis_manager import get_session
 load_dotenv()
 
 
@@ -42,6 +42,12 @@ def extract_plan_params(query: str) -> dict:
 
 def plan_agent(state: AgentState) -> AgentState:
     query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
     try:
         print(f"📋 [Plan Agent] 收到规划请求: {query}")
 
@@ -58,24 +64,27 @@ def plan_agent(state: AgentState) -> AgentState:
         # 3. 调用 Claude 生成规划
         prompt = f"""你是一名公考备考规划专家。请根据用户需求，制定一份详细的学习计划。
 
-用户信息：
-- 目标考试：{params['target']}
-- 备考时间：{params['time']}
-- 每天学习时长：{params['daily_hours']}小时
-- 基础水平：{params['level']}
+        【对话历史】
+        {history_text if history_text else "无"}
 
-参考备考知识：
-{context}
+        【用户信息】
+        - 目标考试：{params['target']}
+        - 备考时间：{params['time']}
+        - 每天学习时长：{params['daily_hours']}小时
+        - 基础水平：{params['level']}
 
-请输出规划（按以下结构）：
-### 总体目标
-### 阶段划分（分3-4个阶段，每个阶段明确时间、重点内容、目标）
-### 每日时间分配建议
-### 行测各模块学习方法
-### 申论备考建议
-### 推荐资料
-### 注意事项
-"""
+        【参考备考知识】
+        {context}
+
+        请输出规划（按以下结构）：
+        ### 总体目标
+        ### 阶段划分
+        ### 每日时间分配建议
+        ### 行测各模块学习方法
+        ### 申论备考建议
+        ### 推荐资料
+        ### 注意事项
+        """
         llm = get_llm()
         print("🤖 正在生成学习规划...")
         t0 = time.time()
@@ -98,3 +107,45 @@ def plan_agent(state: AgentState) -> AgentState:
         state["final_answer"] = f"生成规划失败: {str(e)}"
         state["intermediate"]["plan"] = {}
         return state
+
+async def plan_agent_stream(state: AgentState):
+    query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+
+    prompt = f"""你是一名公考备考规划专家。请根据用户需求制定详细学习计划。
+    【对话历史】
+    {history_text if history_text else "无"}
+    
+    【用户需求】
+    {query}
+        
+    【参考知识】
+    {context}
+    请按以下结构输出：
+    ### 总体目标
+    ### 阶段划分
+    ### 每日时间分配
+    ### 各模块学习方法
+    ### 推荐资料"""
+
+    llm = ChatAnthropic(
+        model="claude-haiku-4-5-20251001",
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        streaming=True,
+        max_tokens=4096
+    )
+    async for chunk in llm.astream(prompt):
+        content = chunk.content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    yield block.get('text', '')
+                elif hasattr(block, 'type') and block.type == 'text':
+                    yield block.text
+        else:
+            yield str(content)

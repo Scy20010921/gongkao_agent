@@ -8,6 +8,30 @@ from langsmith import traceable
 from core.redis_manager import get_session, add_message
 load_dotenv()
 
+async def qa_agent_stream(state: AgentState):
+    query = state["user_query"]
+    retriever = get_retriever(top_k=3)
+    nodes = retriever.retrieve(query)
+    context = "\n".join([n.text for n in nodes])
+    prompt = f"基于以下资料回答：\n资料：{context}\n问题：{query}\n回答："
+
+    llm = ChatAnthropic(
+        model="claude-haiku-4-5-20251001",
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        streaming=True,
+        max_tokens=4096
+    )
+    async for chunk in llm.astream(prompt):
+        content = chunk.content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    yield block.get('text', '')
+                elif hasattr(block, 'type') and block.type == 'text':
+                    yield block.text
+        else:
+            yield str(content)
+
 def get_llm():
     return ChatAnthropic(
         model="claude-sonnet-5",

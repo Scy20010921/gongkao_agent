@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from core.retriever import get_retriever
 from agents.state import AgentState
-
+from core.redis_manager import get_session, add_message
 load_dotenv()
 
 def get_llm():
@@ -17,6 +17,12 @@ def get_llm():
 def exam_agent(state: AgentState) -> AgentState:
     """出题 Agent：基于知识库生成练习题"""
     query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
     try:
         print(f"📝 [Exam Agent] 收到出题请求: {query}")
         t0 = time.time()
@@ -36,7 +42,14 @@ def exam_agent(state: AgentState) -> AgentState:
 
         # 2. 调用 Claude 生成题目
         prompt = f"""你是一名公考出题专家。请基于以下资料，生成一道公考风格的题目。
+【对话历史】
+{history_text if history_text else "无"}
 
+【参考资料】
+{context}
+
+【当前问题】
+{query}
 要求：
 - 题型：选择题（单选）
 - 难度：中等
@@ -80,3 +93,48 @@ def exam_agent(state: AgentState) -> AgentState:
         state["final_answer"] = f"出题失败: {str(e)}"
         state["intermediate"]["exam"] = ""
         return state
+
+
+async def exam_agent_stream(state: AgentState):
+    query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+
+    retriever = get_retriever(top_k=5)
+    nodes = retriever.retrieve(query)
+    context = "\n".join([n.text for n in nodes]) if nodes else ""
+
+    prompt = f"""你是一名公考出题专家。请基于以下资料，生成一道公考风格的题目。
+
+【对话历史】
+{history_text if history_text else "无"}
+
+【参考资料】
+{context}
+
+【当前问题】
+{query}
+
+要求：题型自选（选择题/判断题/简答题），包含题干、选项（如适用）、正确答案、详细解析。
+请直接输出题目内容。"""
+
+    llm = ChatAnthropic(
+        model="claude-haiku-4-5-20251001",
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        streaming=True,
+        max_tokens=4096
+    )
+    async for chunk in llm.astream(prompt):
+        content = chunk.content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    yield block.get('text', '')
+                elif hasattr(block, 'type') and block.type == 'text':
+                    yield block.text
+        else:
+            yield str(content)

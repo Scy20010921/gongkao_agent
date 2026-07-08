@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
 from core.job_matcher import match_jobs
 from agents.state import AgentState
-
+from core.redis_manager import get_session
 load_dotenv()
 
 
@@ -72,6 +72,13 @@ def extract_user_info(query: str) -> dict:
 
 def job_agent(state: AgentState) -> AgentState:
     query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+    user_info = extract_user_info(query)
     try:
         print(f"💼 [Job Agent] 收到选岗请求: {query}")
 
@@ -111,22 +118,23 @@ def job_agent(state: AgentState) -> AgentState:
         ])
 
         prompt = f"""你是一名公考选岗专家。请根据以下岗位匹配结果，为用户提供选岗建议。
-
-【用户条件】
-专业：{user_info['major']}
-学历：{user_info['education']}
-地点：{user_info.get('location', '不限')}
-身份：{'应届生' if user_info.get('is_应届') else '往届生' if user_info.get('is_应届') is False else '不限'}
-
-【匹配岗位】（按匹配度排序）
-{jobs_text}
-
-请输出：
-### 推荐岗位（Top 3）
-### 选岗建议（结合报录比、进面分、发展前景）
-### 备选方向
-### 下一步行动建议
-"""
+        【对话历史】
+        {history_text if history_text else "无"}
+        【用户条件】
+        专业：{user_info['major']}
+        学历：{user_info['education']}
+        地点：{user_info.get('location', '不限')}
+        身份：{'应届生' if user_info.get('is_应届') else '往届生' if user_info.get('is_应届') is False else '不限'}
+        
+        【匹配岗位】（按匹配度排序）
+        {jobs_text}
+        
+        请输出：
+        ### 推荐岗位（Top 3）
+        ### 选岗建议（结合报录比、进面分、发展前景）
+        ### 备选方向
+        ### 下一步行动建议
+        """
         llm = get_llm()
         print("🤖 正在生成选岗建议...")
         t0 = time.time()
@@ -150,3 +158,56 @@ def job_agent(state: AgentState) -> AgentState:
         state["final_answer"] = f"选岗失败: {str(e)}"
         state["intermediate"]["job"] = {}
         return state
+async def job_agent_stream(state: AgentState):
+    query = state["user_query"]
+    session_id = state.get("session_id", "default")
+    history = get_session(session_id) or []
+    history_text = ""
+    if history:
+        recent = history[-6:]
+        history_text = "\n".join([f"{m['role']}: {m['content']}" for m in recent])
+
+    user_info = extract_user_info(query)
+    matched_jobs = match_jobs(
+        major=user_info.get("major", "不限"),
+        education=user_info.get("education", "本科及以上"),
+        location=user_info.get("location"),
+        is_应届=user_info.get("is_应届"),
+        experience=user_info.get("experience")
+    )
+    if not matched_jobs:
+        yield "未找到符合条件的岗位，建议放宽条件后重试。"
+        return
+
+    jobs_text = "\n\n".join([
+        f"【{j['部门名称']}】{j['招考职位']}\n"
+        f"  地点：{j['工作地点']}\n  学历：{j['学历']}\n  专业：{j.get('专业', '不限')}\n"
+        f"  匹配度：{j.get('match_score', 0)}分"
+        for j in matched_jobs[:3]
+    ])
+    prompt = f"""你是一名公考选岗专家。请根据以下岗位匹配结果提供选岗建议。
+    【对话历史】
+    {history_text if history_text else "无"}
+    匹配岗位：{jobs_text}
+    用户条件：{user_info}
+    输出格式：
+    ### 推荐岗位（Top 3）
+    ### 选岗建议
+    ### 备选方向"""
+
+    llm = ChatAnthropic(
+        model="claude-haiku-4-5-20251001",
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        streaming=True,
+        max_tokens=4096
+    )
+    async for chunk in llm.astream(prompt):
+        content = chunk.content
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    yield block.get('text', '')
+                elif hasattr(block, 'type') and block.type == 'text':
+                    yield block.text
+        else:
+            yield str(content)

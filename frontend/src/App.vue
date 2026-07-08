@@ -93,57 +93,83 @@ const sendMessage = async () => {
   const text = inputText.value.trim()
   if (!text || loading.value) return
 
-  // 添加用户消息
   messages.value.push({ role: 'user', content: text })
   inputText.value = ''
   loading.value = true
   scrollToBottom()
 
+  const assistantMsg = { role: 'assistant', content: '' }
+  messages.value.push(assistantMsg)
+  const msgIndex = messages.value.length - 1
+
   try {
-    const response = await axios.post(`${API_BASE}/chat`, {
-      question: text
-    }, {
-      timeout: 180000  // 3分钟超时
+    const response = await fetch(`${API_BASE}/chat_stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: text }),
     })
 
-    const data = response.data
-    const answer = data.answer || '抱歉，未获取到回答。'
-    const intent = data.intent || ''
-
-    // 构建带意图标签的回答
-    let displayAnswer = answer
-    if (intent) {
-      const intentMap = {
-        'qa': '💬 答疑',
-        'exam': '📝 出题',
-        'plan': '📋 规划',
-        'grading': '📖 批改',
-        'job': '💼 选岗',
-        'ops': '📢 运营'
-      }
-      displayAnswer = `**${intentMap[intent] || intent}**\n\n${answer}`
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    messages.value.push({ role: 'assistant', content: displayAnswer })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      // 关键修复：使用正确的变量名 decodedChunk
+      const decodedChunk = decoder.decode(value, { stream: true })
+      buffer += decodedChunk
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        if (trimmed.startsWith('data: ')) {
+          const jsonStr = trimmed.slice(6)
+          try {
+            const data = JSON.parse(jsonStr)
+            // 兼容 token 和 text 两种字段
+            const token = data.token || data.text || ''
+            if (token) {
+              messages.value[msgIndex].content += token
+              scrollToBottom()
+            }
+          } catch (e) {
+            console.warn('解析失败:', e, jsonStr)
+          }
+        }
+      }
+    }
+
+    // 处理缓冲区剩余数据
+    if (buffer.trim()) {
+      try {
+        const data = JSON.parse(buffer)
+        const token = data.token || data.text || ''
+        if (token) {
+          messages.value[msgIndex].content += token
+          scrollToBottom()
+        }
+      } catch (e) {}
+    }
+
   } catch (error) {
-    console.error('请求失败:', error)
-    messages.value.push({ 
-      role: 'assistant', 
-      content: '❌ 请求失败，请检查后端服务是否运行。\n\n错误信息：' + error.message 
-    })
+    console.error('流式请求失败:', error)
+    messages.value[msgIndex].content = '? 请求失败：' + error.message
   } finally {
     loading.value = false
     scrollToBottom()
   }
 }
-
 const quickSend = (text) => {
-  if (text.includes('批改这篇申论：')) {
-    inputText.value = text
-  } else {
-    inputText.value = text
-    sendMessage()
-  }
+  inputText.value = text
+  sendMessage()
 }
 
 // ===== 检查后端状态 =====
