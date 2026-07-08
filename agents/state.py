@@ -8,6 +8,7 @@ class AgentState(TypedDict):
     intent: Optional[str]  # "job" | "plan" | "qa" | "exam" | "grading" | "ops"
     # 对话历史（用于多轮）
     messages: List[Dict[str, str]]
+    session_id: str
     # 检索到的文档片段
     retrieved_docs: List[str]
     # 各 Agent 的中间结果

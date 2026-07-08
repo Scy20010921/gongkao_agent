@@ -8,6 +8,7 @@ from agents.exam_agent import exam_agent
 from agents.plan_agent import plan_agent
 from agents.grading_agent import grading_agent
 from agents.job_agent import job_agent
+from agents.ops_agent import ops_agent
 load_dotenv()
 
 # 初始化 LLM（用于意图识别）
@@ -23,12 +24,16 @@ def classify_intent(state: AgentState) -> AgentState:
     """识别用户意图，只输出一个词"""
     query = state["user_query"]
     prompt = f"""判断用户问题属于以下哪个类别，只输出一个词：
-    - job: 选岗、职位推荐、岗位匹配
-    - plan: 学习规划、备考计划、时间安排
-    - qa: 答疑、知识点解释、政策咨询
-    - exam: 出题、组卷、生成练习题
-    - grading: 批改、评分、写作批改
-    - ops: 内容运营、热点资讯、备考素材
+    - job: 选岗、职位推荐、岗位匹配、报考咨询
+    - plan: 学习规划、备考计划、时间安排、学习方案
+    - qa: 答疑、知识点解释、政策咨询、概念解释
+    - exam: 出题、组卷、生成练习题、模拟题
+    - grading: 批改、评分、写作批改、申论批改
+    - ops: 内容运营、每日一练、练习题生成、热点资讯、备考素材、金句、学习资料
+
+    注意：
+    - 如果用户要求“生成”、“出”、“给”练习题、每日一练，属于 ops 或 exam。
+    - “每日一练”明确属于 ops。
 
     问题：{query}
     类别："""
@@ -59,7 +64,7 @@ def route_to_agent(state: AgentState) -> str:
         "plan": "plan_agent",  # 后续替换为真实的子 Agent
         "exam": "exam_agent",
         "grading": "grading_agent",
-        "ops": "qa_agent",
+        "ops": "ops_agent",
 
     }
     return routing_map.get(intent, "qa_agent")
@@ -75,7 +80,7 @@ supervisor_graph.add_node("exam_agent", exam_agent)
 supervisor_graph.add_node("plan_agent", plan_agent)
 supervisor_graph.add_node("grading_agent", grading_agent)
 supervisor_graph.add_node("job_agent", job_agent)
-
+supervisor_graph.add_node("ops_agent", ops_agent)
 # 设置入口
 supervisor_graph.set_entry_point("classify")
 
@@ -89,6 +94,7 @@ supervisor_graph.add_conditional_edges(
         "plan_agent": "plan_agent",
         "grading_agent": "grading_agent",
         "job_agent": "job_agent",
+        "ops_agent": "ops_agent",
         # 后续添加更多 Agent 时在这里扩展
     }
 )
@@ -99,5 +105,6 @@ supervisor_graph.add_edge("exam_agent", END)
 supervisor_graph.add_edge("plan_agent", END)
 supervisor_graph.add_edge("grading_agent", END)
 supervisor_graph.add_edge("job_agent", END)
+supervisor_graph.add_edge("ops_agent", END)
 # 编译
 supervisor_workflow = supervisor_graph.compile()
